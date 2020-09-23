@@ -44,11 +44,22 @@ def _reset_index(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index()
 
 
+# Maybe include a task to extract the neccesary rows
+
+
 @task
 @require(lambda df, mapping: set(mapping.keys()).issubset(set(df.columns)))
 def _rename_columns(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
 
     return df.rename(columns=mapping)
+
+
+@task
+def _strip_whitespace(df: pd.DataFrame, target: str, result: str) -> pd.DataFrame:
+
+    df[result] = df[target].astype(str).str.replace(r"\s+", " ")
+
+    return df
 
 
 @task
@@ -62,18 +73,22 @@ def _extract_columns(df: pd.DataFrame, column_names: List[str]) -> pd.DataFrame:
 @require(lambda gas, on: set(on).issubset(set(gas.columns)))
 @require(lambda postcodes, on: set(on).issubset(set(postcodes.columns)))
 def _merge_on_common_postcodes(
-    gas: pd.DataFrame, postcodes: pd.DataFrame, on: List[str], **kwargs,
+    gas: pd.DataFrame, postcodes: pd.DataFrame, on: List[str], validate, **kwargs,
 ) -> pd.DataFrame:
 
-    return gas.merge(postcodes, on=on, **kwargs)
+    return gas.merge(postcodes, on=on, validate=validate, **kwargs)
 
 
 @task
 def _plot_gas_by_postcode(
-    gas_by_postcode: gpd.GeoDataFrame, filepath: Path
+    df: gpd.GeoDataFrame, col, legend_title, filepath: Path
 ) -> gpd.GeoDataFrame:
 
-    return gpd.GeoDataFrame().to_figure().savefig(filepath)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    fig.suptitle(legend_title)
+    gpd.GeoDataFrame(df).plot(column=col, cmap="plasma", legend=True)
+
+    return plt.savefig(filepath)
 
 
 with Flow("Plot Gas") as flow:
@@ -87,17 +102,33 @@ with Flow("Plot Gas") as flow:
         gas_raw,
         {
             "Table 4A Networked Gas Consumption by Dublin Postal District for Non-Residential Sector 2011-2019": "postcodes",
-            "Unnamed: 9": "2019",
+            "Unnamed: 9": "Consumption (GWh)",
         },
     )
 
-    gas_extracted = _extract_columns(gas_renamed, ["postcodes", "2019"],)
-    postcodes_extracted = _extract_columns(postcodes_reset, ["postcodes", "geometry"],)
+    postcodes_stripped = _strip_whitespace(
+        postcodes_reset, target="postcodes", result="postcodes",
+    )
+    gas_stripped = _strip_whitespace(
+        gas_renamed, target="postcodes", result="postcodes",
+    )
+
+    gas_extracted = _extract_columns(gas_stripped, ["postcodes", "Consumption (GWh)"],)
+    postcodes_extracted = _extract_columns(
+        postcodes_stripped, ["postcodes", "geometry"],
+    )
 
     gas_by_postcode = _merge_on_common_postcodes(
-        gas_extracted, postcodes_extracted, on=["postcodes"], how="outer"
+        gas_extracted,
+        postcodes_extracted,
+        on=["postcodes"],
+        how="outer",
+        validate="one_to_many",
     )
 
     _plot_gas_by_postcode(
-        gas_by_postcode, (PROCESSED_DIR / "test.pdf"),
+        gas_by_postcode,
+        "Consumption (GWh)",
+        "Networked Gas Consumption by Dublin Postal District for Non-Residential Sector in 2019",
+        (PROCESSED_DIR / "dublingasbypostcode.pdf"),
     )
