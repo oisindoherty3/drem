@@ -8,6 +8,7 @@ estimate for residential energy demand in Dublin.
 
 """
 import pandas as pd
+import geopandas as gpd
 
 from prefect import Flow
 from prefect import task
@@ -20,6 +21,12 @@ from drem.filepaths import RAW_DIR
 def _read_sa_parquet(input_filepath: str) -> pd.DataFrame:
 
     return pd.read_parquet(input_filepath).drop_duplicates()
+
+
+@task
+def _read_sa_geometries(input_filepath: str) -> gpd.GeoDataFrame:
+
+    return gpd.read_parquet(input_filepath)
 
 
 @task
@@ -39,7 +46,13 @@ def _merge_ber_sa(
 @task
 def _extract_res(df: pd.DataFrame, on: str, value: str) -> pd.DataFrame:
 
-    return df.loc[df[on] == value]
+    return df.loc[df[on] == value].drop_duplicates().reset_index(drop=True)
+
+
+@task
+def _transform_res(df: pd.DataFrame, lon: str, lat: str) -> gpd.GeoDataFrame:
+
+    return gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(lon, lat))
 
 
 @task
@@ -59,6 +72,7 @@ def _count_buildings_by_sa(
 with Flow("Create synthetic residential building stock") as flow:
 
     dublin_sa = _read_sa_parquet(PROCESSED_DIR / "small_area_geometries_2016.parquet")
+    sa_geo = _read_sa_geometries(PROCESSED_DIR / "small_area_geometries_2016.parquet")
     ber = _read_csv(RAW_DIR / "BER.09.06.2020.csv")
     ber_dublin = _merge_ber_sa(
         left=dublin_sa,
@@ -69,7 +83,8 @@ with Flow("Create synthetic residential building stock") as flow:
         indicator=True,
     )
     geo = _read_csv(RAW_DIR / "DublinBuildingsData.csv")
-    geo = _extract_res(geo, on="BUILDING_USE", value="R")
+    geo_transformed = _transform_res(df=geo, lon=geo["LONGITUDE"], lat=geo["LATITUDE"])
+    geo_extracted = _extract_res(df=geo_transformed, on="BUILDING_USE", value="R",)
     ber_assigned = _assign_building_type(
         ber_dublin,
         on="Dwelling type description",
