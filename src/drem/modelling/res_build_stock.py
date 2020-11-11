@@ -72,9 +72,11 @@ def _assign_building_type(df: pd.DataFrame, on: str, equiv: list) -> pd.DataFram
 
 
 @task
-def _total_res_buildings_by_sa(gdf: gpd.GeoDataFrame, on: str) -> pd.DataFrame:
+def _total_res_buildings_by_sa(
+    gdf: gpd.GeoDataFrame, on: str, renamed: str,
+) -> pd.DataFrame:
 
-    return gdf[on].value_counts()
+    return gdf[[on]].value_counts().rename(renamed).reset_index()
 
 
 @task
@@ -83,6 +85,14 @@ def _count_buildings_by_sa(
 ) -> pd.DataFrame:
 
     return df.groupby(by)[on].value_counts(normalize=True).rename(renamed).reset_index()
+
+
+@task
+def _final_count(df: pd.DataFrame, total: str, count: str, ratio: str) -> pd.DataFrame:
+
+    df[total] = df[count] * df[ratio]
+
+    return df
 
 
 with Flow("Create synthetic residential building stock") as flow:
@@ -119,10 +129,25 @@ with Flow("Create synthetic residential building stock") as flow:
             "None": "Not stated",
         },
     )
-    geo_total = _total_res_buildings_by_sa(geo_joined, "small_area")
+    geo_total = _total_res_buildings_by_sa(
+        geo_joined, on="small_area", renamed="total_dwellings",
+    )
     ber_grouped = _count_buildings_by_sa(
         ber_assigned,
         by="cso_small_area",
         on="Dwelling type description",
         renamed="Dwelling Percentage",
+    )
+    joined = _merge_ber_sa(
+        left=geo_total,
+        right=ber_grouped,
+        left_on="small_area",
+        right_on="cso_small_area",
+        how="inner",
+    )
+    output = _final_count(
+        joined,
+        total="total_buildings_per_sa",
+        count="total_dwellings",
+        ratio="Dwelling Percentage",
     )
