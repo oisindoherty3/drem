@@ -7,8 +7,8 @@ then be applied to outputs from EnergyPlus to generate a first-pass
 estimate for residential energy demand in Dublin.
 
 """
-import pandas as pd
 import geopandas as gpd
+import pandas as pd
 
 from prefect import Flow
 from prefect import task
@@ -56,9 +56,25 @@ def _transform_res(df: pd.DataFrame, lon: str, lat: str) -> gpd.GeoDataFrame:
 
 
 @task
+def _spatial_join(
+    left: gpd.GeoDataFrame, right: gpd.GeoDataFrame, **kwargs,
+) -> gpd.GeoDataFrame:
+
+    right = right.set_crs(epsg="4326")
+
+    return gpd.sjoin(left, right)
+
+
+@task
 def _assign_building_type(df: pd.DataFrame, on: str, equiv: list) -> pd.DataFrame:
 
     return df.replace({on: equiv})
+
+
+@task
+def _total_res_buildings_by_sa(gdf: gpd.GeoDataFrame, on: str) -> pd.DataFrame:
+
+    return gdf[on].value_counts()
 
 
 @task
@@ -84,7 +100,8 @@ with Flow("Create synthetic residential building stock") as flow:
     )
     geo = _read_csv(RAW_DIR / "DublinBuildingsData.csv")
     geo_transformed = _transform_res(df=geo, lon=geo["LONGITUDE"], lat=geo["LATITUDE"])
-    geo_extracted = _extract_res(df=geo_transformed, on="BUILDING_USE", value="R",)
+    geo_extracted = _extract_res(df=geo_transformed, on="BUILDING_USE", value="R")
+    geo_joined = _spatial_join(sa_geo, geo_extracted, how="right")
     ber_assigned = _assign_building_type(
         ber_dublin,
         on="Dwelling type description",
@@ -102,6 +119,7 @@ with Flow("Create synthetic residential building stock") as flow:
             "None": "Not stated",
         },
     )
+    geo_total = _total_res_buildings_by_sa(geo_joined, "small_area")
     ber_grouped = _count_buildings_by_sa(
         ber_assigned,
         by="cso_small_area",
